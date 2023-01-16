@@ -1,5 +1,8 @@
 package il.ac.kinneret.mjmay.tom;
 
+import java.io.FileWriter;
+import java.io.IOException;
+
 public class IncomingProcessor extends Thread {
 
     public IncomingProcessor() {
@@ -12,30 +15,79 @@ public class IncomingProcessor extends Thread {
         // TODO: Handle the pending message queue here.  When an ACK comes, update the queue and remove messages that can be output now.
     while(!isInterrupted())
     {
-        try{
-            Message incomingMessage= SharedState.incomingMessageQueue.take();
-            if(incomingMessage.getType()== Message.MessageType.ACK)
+        Message incomingMessage;
+        synchronized (SharedState.queueLocker) {
+            try {
+              incomingMessage = SharedState.incomingMessageQueue.take();
+            }
+            catch (InterruptedException e)
             {
 
+        }
+            if(incomingMessage.getType()== Message.MessageType.ACK)
+            {
+        for(Message pendingMessage:SharedState.pendingMessages){
+            if(pendingMessage.getType()==Message.MessageType.MESSAGE &&
+                    pendingMessage.getSenderIP() ==incomingMessage.getSenderIP() &&
+                    pendingMessage.getLogicalTimeStamp()==incomingMessage.getLogicalTimeStamp()){
+                pendingMessage.setAcksSoFar(pendingMessage.getAcksSoFar()+1);
+            }
+
+
+        }
             }
             else if(incomingMessage.getType()==Message.MessageType.MESSAGE){
 
             }
-            // If the message is of type MESSAGE, you can add the message to the    pendingMessages
-            // queue and prepare an ACK message to send to all neighbors. You can add the ACK message
-            // to the outgoingMessageQueue to be sent by the OutgoingProcessor.
-            //If the message is of type ACK, you can iterate through the pendingMessages
-            // queue and find the corresponding message (using the senderIP, logicalTimeStamp and
-            // type fields) and increment the acksSoFar field of that message. Then you can check if
-            // the number of acksSoFar equals to the number of neighbors, if yes, you can remove the message
-            // from the pendingMessages queue and write it to the output file.
+
+            SharedState.localLogicalTimestamp=Math.max(SharedState.localLogicalTimestamp,incomingMessage.getLogicalTimeStamp())+1;
+            String ackMessage= Message.ACK +"-" +incomingMessage.getLogicalTimeStamp()+"-"+incomingMessage.getSenderIP();
+
+            SharedState.outgoingMessageQueue.put(ackMessage);
 
 
-        }
-        catch (InterruptedException e)
+            SharedState.pendingMessages.put(incomingMessage);
+        } catch (InterruptedException e) {
+            System.out.println("ERROR GETTING MESSAGE FROM THE QUEUE  : "+e.getMessage());
+
+
+
+    boolean changed=false;
+    synchronized (SharedState.queueLocker)
+    {
+    do{
+        Message smallestMessage=null;
+        for(Message msg:SharedState.pendingMessages)
         {
-            System.err.println("OH NO I WAS INTERRUPTED");
+            if(smallestMessage==null)
+            {
+                smallestMessage=msg;
+            }
+            if(smallestMessage!=null&&
+            msg.getLogicalTimeStamp()< smallestMessage.getLogicalTimeStamp() ||
+                    (msg.getLogicalTimeStamp()==smallestMessage.getLogicalTimeStamp() &&
+                            msg.getSenderIP().compareTo(smallestMessage.getSenderIP())<0)){
+                smallestMessage=msg;
+            }
         }
+
+        if(smallestMessage !=null &smallestMessage.getAcksSoFar()==SharedState.neighbors.size()){
+            SharedState.pendingMessages.remove(smallestMessage);
+            try{
+                FileWriter fos = new FileWriter(SharedState.outputFileName)){
+            fos.write(smallestMessage.toString());
+                }
+            } catch (IOException ex) {
+                System.out.println("Error outputtint to file: " + ex.getMessage());
+            }
+        }
+        else{
+            changed=false;
+        }
+    }while(changed);
+
     }
+        }
+}
     }
 }
