@@ -1,14 +1,14 @@
 package il.ac.kinneret.mjmay.tom;
 
+import com.sun.corba.se.impl.protocol.SharedCDRClientRequestDispatcherImpl;
+import com.sun.xml.internal.ws.policy.privateutil.PolicyUtils;
 import il.ac.kinneret.mjmay.common.Common;
-import jdk.jshell.spi.ExecutionControlProvider;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.net.ServerSocket;
-import java.sql.SQLOutput;
 import java.util.Iterator;
 import java.util.Vector;
 
@@ -72,7 +72,9 @@ public class TomMain {
         }
         // add the port in the end
         fromName = fromName + ":" + port;
-        SharedState.initialize(neighbors,outputFileName,fromName);
+
+        // initialize the shared state and provide it the neighbors and the output file name
+        SharedState.initialize(neighbors, outputFileName, fromName);
 
         // now start to listen for incoming messages
         ServerSocket serverSocket = null;
@@ -157,9 +159,6 @@ public class TomMain {
         doPrintStatus();
     }
 
-    /**
-     * Prints the status of the pending message queue and shows the current logical time stamp
-     */
     private static void doPrintStatus() {
         // print the status of things
         synchronized (SharedState.queueLocker)
@@ -176,22 +175,37 @@ public class TomMain {
     }
 
     private static void doSendMessage() {
-        // TODO: Write the logic to send a new message from the node to others (use the queues).
-        System.out.print("Enter the message to send: ");
-        String line;
-        try {
-            BufferedReader brIn = new BufferedReader(new InputStreamReader(System.in));
-            line = brIn.readLine();
-            int ll = SharedState.localLogicalTimestamp;
-            String myName = SharedState.fromIPPort;
-            String message = Message.MessageType.MESSAGE + "-" + ll + "-" + myName + "-" + line;
-            SharedState.outgoingMessageQueue.put(message);}
-        catch (Exception ex)
-        {
-            System.out.println("Error preparing or sending message: " + ex.getMessage());
-            return;
-        }
+        // get the message to send
+        System.out.print("Enter the message to send : ");
+        BufferedReader brKeyboard = new BufferedReader(new InputStreamReader(System.in));
 
+        try {
+            // read the message
+            String message = brKeyboard.readLine();
+            // prepare to send the message
+            String outgoingMessageContent;
+            Message outgoingMessage;
+            synchronized (SharedState.queueLocker)
+            {
+                // get the current logical time and increment
+                SharedState.localLogicalTimestamp++;
+                outgoingMessageContent = Message.MESSAGE.toString() + "-" + SharedState.localLogicalTimestamp + "-" + SharedState.fromIPPort +
+                        "-" + message;
+            }
+            System.out.println("Ready to send: " + outgoingMessageContent);
+            SharedState.outgoingMessageQueue.put(outgoingMessageContent);
+            // add it to the pending messages queue
+            outgoingMessage = new Message(outgoingMessageContent);
+            //SharedState.pendingMessages.put(outgoingMessage);
+        } catch (IOException e)
+        {
+            // something went wrong
+            System.out.println("Error reading message.  Try again.");
+            return;
+        } catch (InterruptedException e) {
+            // something weird happened sending
+            System.out.println("Error sending message.  Try again.");
+        }
     }
 
     private static void showUsage() {

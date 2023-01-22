@@ -1,7 +1,15 @@
 package il.ac.kinneret.mjmay.tom;
 
-import java.io.FileWriter;
+import com.sun.corba.se.impl.protocol.SharedCDRClientRequestDispatcherImpl;
+import sun.rmi.runtime.Log;
+
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.Iterator;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class IncomingProcessor extends Thread {
 
@@ -10,84 +18,108 @@ public class IncomingProcessor extends Thread {
     }
 
     public void run() {
-        // TODO: Fill me in!
-        // TODO: Need to listen to incoming messages that are placed on the incoming messages queue. When a message is added to the queue, take it off and process.
-        // TODO: Handle the pending message queue here.  When an ACK comes, update the queue and remove messages that can be output now.
-    while(!isInterrupted())
-    {
-        Message incomingMessage;
-        synchronized (SharedState.queueLocker) {
+        PrintWriter pwOut = null;
+        try {
+            pwOut = new PrintWriter(new FileOutputStream(SharedState.outputFileName, true));
+        } catch (IOException e) {
+            Logger.getGlobal().warning("Error opening log file: " + e.getMessage());
+            return;
+        }
+        while (!interrupted()) {
+            // open the output file
+            // wait until there an incoming message to process and grab it
+            Message nextMessage = null;
             try {
-              incomingMessage = SharedState.incomingMessageQueue.take();
-            }
-            catch (InterruptedException e)
-            {
+                nextMessage = SharedState.incomingMessageQueue.take();
+                // now process the message
+                if (nextMessage.getType() == Message.MessageType.MESSAGE) {
+                    // update our logical clock to the max of what we have and what we received, then increment
+                    synchronized (SharedState.queueLocker) {
+                        SharedState.localLogicalTimestamp = Math.max(SharedState.localLogicalTimestamp, nextMessage.getLogicalTimeStamp());
+                        SharedState.localLogicalTimestamp++;
+                    }
+                    // put it in the pending queue
+                    SharedState.pendingMessages.put(nextMessage);
+                    // send ACKs all around
+                    String ackMessage = Message.ACK.toString() + "-" + nextMessage.getLogicalTimeStamp() + "-" + nextMessage.getSenderIP();
+                    SharedState.outgoingMessageQueue.put(ackMessage);
+                } else if (nextMessage.getType() == Message.MessageType.ACK) {
+                    // it's an ACK, find the appropriate message in the queue
+                    synchronized (SharedState.pendingMessages) {
+                        Iterator<Message> it = SharedState.pendingMessages.iterator();
+                        boolean done = false;
+                        while (it.hasNext() && !done) {
+                            Message m = it.next();
+                            // see if it has the right logical time and sender
+                            if (nextMessage.getSenderIP().equals(m.getSenderIP()) && nextMessage.getLogicalTimeStamp() == m.getLogicalTimeStamp()) {
+                                // set the ACK count for it (us and the sender)
+                                m.setAcksSoFar(m.getAcksSoFar() + 1);
+                                done = true;
+                            }
+                        }
 
-        }
-            if(incomingMessage.getType()== Message.MessageType.ACK)
-            {
-        for(Message pendingMessage:SharedState.pendingMessages){
-            if(pendingMessage.getType()==Message.MessageType.MESSAGE &&
-                    pendingMessage.getSenderIP() ==incomingMessage.getSenderIP() &&
-                    pendingMessage.getLogicalTimeStamp()==incomingMessage.getLogicalTimeStamp()){
-                pendingMessage.setAcksSoFar(pendingMessage.getAcksSoFar()+1);
-            }
+                        // if we finished and done is false, there wasn't a match
+                        if (!done) {
+                            Logger.getGlobal().warning("Got an ACK without a message: " + nextMessage);
+                            continue;
+                        }
+                    }
+                    // we have an ACK received, see if anything can be removed from the pending queue
+                    synchronized (SharedState.pendingMessages) {
+                        // go over them and find the one at the head
+                        boolean changed = false;
+                        Message minMessage = SharedState.pendingMessages.element();
+                        do {
+                            changed = false;
+                            Iterator<Message> it = SharedState.pendingMessages.iterator();
+                            while (it.hasNext()) {
+                                Message m = it.next();
+                                // see if this one is before the min one - either it has a smaller time stamp
+                                // or it has the same timestamp, but the senderIP and port are smaller
+                                if (m.getLogicalTimeStamp() < minMessage.getLogicalTimeStamp() || (
+                                        m.getLogicalTimeStamp() == minMessage.getLogicalTimeStamp() && m.getSenderIP().compareTo(minMessage.getSenderIP()) < 0)) {
+                                    // this message is the minimum one for real
+                                    minMessage = m;
+                                }
+                            }
 
+                            // see if the minimum message can be removed (it needs to have an ACK from everyone including
+                            // us, so size)
+                            if (minMessage.getAcksSoFar() == SharedState.neighbors.size()) {
+                                // reinitialize the iterator
+                                it = SharedState.pendingMessages.iterator();
+                                // find the message we want
+                                while (it.hasNext()) {
+                                    Message m = it.next();
+                                    if (m.getLogicalTimeStamp() == minMessage.getLogicalTimeStamp() &&
+                                            m.getSenderIP().equals(minMessage.getSenderIP())) {
+                                        it.remove();
+                                        changed = true;
 
-        }
-            }
-            else if(incomingMessage.getType()==Message.MessageType.MESSAGE){
-
-            }
-
-            SharedState.localLogicalTimestamp=Math.max(SharedState.localLogicalTimestamp,incomingMessage.getLogicalTimeStamp())+1;
-            String ackMessage= Message.ACK +"-" +incomingMessage.getLogicalTimeStamp()+"-"+incomingMessage.getSenderIP();
-
-            SharedState.outgoingMessageQueue.put(ackMessage);
-
-
-            SharedState.pendingMessages.put(incomingMessage);
-        } catch (InterruptedException e) {
-            System.out.println("ERROR GETTING MESSAGE FROM THE QUEUE  : "+e.getMessage());
-
-
-
-    boolean changed=false;
-    synchronized (SharedState.queueLocker)
-    {
-    do{
-        Message smallestMessage=null;
-        for(Message msg:SharedState.pendingMessages)
-        {
-            if(smallestMessage==null)
-            {
-                smallestMessage=msg;
-            }
-            if(smallestMessage!=null&&
-            msg.getLogicalTimeStamp()< smallestMessage.getLogicalTimeStamp() ||
-                    (msg.getLogicalTimeStamp()==smallestMessage.getLogicalTimeStamp() &&
-                            msg.getSenderIP().compareTo(smallestMessage.getSenderIP())<0)){
-                smallestMessage=msg;
-            }
-        }
-
-        if(smallestMessage !=null &smallestMessage.getAcksSoFar()==SharedState.neighbors.size()){
-            SharedState.pendingMessages.remove(smallestMessage);
-            try{
-                FileWriter fos = new FileWriter(SharedState.outputFileName)){
-            fos.write(smallestMessage.toString());
+                                        // print it to the output file
+                                        pwOut.println(minMessage.toString());
+                                        pwOut.flush();
+                                        break;
+                                    }
+                                }
+                                // we changed the table, maybe something else can come out next time too
+                            }
+                        } while (changed); // do this until there's no change
+                    }
                 }
-            } catch (IOException ex) {
-                System.out.println("Error outputtint to file: " + ex.getMessage());
+            } catch (InterruptedException e) {
+                if ( SharedState.verbose) {
+                    Logger.getGlobal().log(Level.INFO, "Something interrupted the incoming message processor: " + e.getMessage());
+                }
+                break;
             }
-        }
-        else{
-            changed=false;
-        }
-    }while(changed);
 
-    }
         }
-}
+        // close the output writer if we need to
+        if (pwOut != null)
+
+        {
+            pwOut.close();
+        }
     }
 }
